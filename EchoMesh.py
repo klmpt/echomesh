@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# echomesh - p2p encrypted messenger
+# ONLY HOST CAN BE ADMIN
+
 import socket
 import threading
 import json
@@ -10,48 +13,119 @@ import os
 from datetime import datetime
 from cryptography.fernet import Fernet
 import base64
-from collections import defaultdict
 
-class EchoMeshPro:
-    def __init__(self, nickname: str):
-        self.nickname = nickname
-        self.connection = None
-        self.cipher = None
-        self.peer_addr = None
-        self.running = True
-        self.is_host = False
-        self.is_admin = False
-        self.room_password = None
-        self.admin_password = None
-        self.banned_ips = set()
-        self.message_history = []
-        self.rate_limit = defaultdict(list)
+# ------------- colors -------------
+class style:
+    R = '\033[91m'
+    G = '\033[92m'
+    Y = '\033[93m'
+    B = '\033[94m'
+    P = '\033[95m'
+    C = '\033[96m'
+    W = '\033[97m'
+    D = '\033[2m'
+    BD = '\033[1m'
+    RST = '\033[0m'
+
+def col(txt, c):
+    return f"{c}{txt}{style.RST}"
+
+# ------------- banner -------------
+BANNER = r'''
+▄▀▀█▄▄▄▄  ▄▀▄▄▄▄   ▄▀▀▄ ▄▄   ▄▀▀▀▀▄   ▄▀▀▄ ▄▀▄  ▄▀▀█▄▄▄▄  ▄▀▀▀▀▄  ▄▀▀▄ ▄▄ 
+▐  ▄▀   ▐ █ █    ▌ █  █   ▄▀ █      █ █  █ ▀  █ ▐  ▄▀   ▐ █ █   ▐ █  █   ▄▀
+  █▄▄▄▄▄  ▐ █      ▐  █▄▄▄█  █      █ ▐  █    █   █▄▄▄▄▄     ▀▄   ▐  █▄▄▄█ 
+  █    ▌    █         █   █  ▀▄    ▄▀   █    █    █    ▌  ▀▄   █     █   █ 
+ ▄▀▄▄▄▄    ▄▀▄▄▄▄▀   ▄▀  ▄▀    ▀▀▀▀   ▄▀   ▄▀    ▄▀▄▄▄▄    █▀▀▀     ▄▀  ▄▀ 
+ █    ▐   █     ▐   █   █             █    █     █    ▐    ▐       █   █   
+ ▐        ▐         ▐   ▐             ▐    ▐     ▐                 ▐   ▐   
+'''
+
+# ------------- plugin system (host only) -------------
+class PluginManager:
+    def __init__(self, is_admin=False):
+        self.plugins = {}
+        self.plugin_dir = "plugins"
+        self.is_admin = is_admin
         
-        self.stats = {
-            'sent': 0,
-            'received': 0,
-        }
+        if not os.path.exists(self.plugin_dir) and is_admin:
+            os.makedirs(self.plugin_dir)
     
-    def color_text(self, text, color):
-        colors = {
-            'red': '\033[91m', 'green': '\033[92m', 'yellow': '\033[93m',
-            'blue': '\033[94m', 'purple': '\033[95m', 'cyan': '\033[96m',
-            'white': '\033[97m', 'bold': '\033[1m', 'dim': '\033[2m',
-            'magenta': '\033[95m',
-            'reset': '\033[0m'
-        }
-        return f"{colors.get(color, '')}{text}{colors['reset']}"
+    def load_plugins(self):
+        if not self.is_admin:
+            print(col("  plugins disabled (only host can use plugins)", style.D))
+            return
+            
+        if not os.path.exists(self.plugin_dir):
+            return
+            
+        for file in os.listdir(self.plugin_dir):
+            if file.endswith('.emf'):
+                self.load_plugin(file)
     
-    def print_banner(self):
-        banner = f"""
-{self.color_text('╔══════════════════════════════════════════════════════════╗', 'cyan')}
-{self.color_text('║', 'cyan')}              {self.color_text('🌟 ECHOMESH PRO v3.1 🌟', 'bold')}                  {self.color_text('║', 'cyan')}
-{self.color_text('║', 'cyan')}         {self.color_text('Clean P2P Encrypted Messenger', 'white')}                {self.color_text('║', 'cyan')}
-{self.color_text('╚══════════════════════════════════════════════════════════╝', 'cyan')}
-        """
-        print(banner)
+    def load_plugin(self, filename):
+        path = os.path.join(self.plugin_dir, filename)
+        name = filename[:-4]
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                code = f.read()
+            
+            module = {}
+            exec(code, module)
+            
+            if 'setup' in module:
+                plugin_info = module['setup']()
+                self.plugins[name] = {
+                    'module': module,
+                    'info': plugin_info,
+                    'enabled': True
+                }
+                print(col(f"  ✓ loaded: {plugin_info.get('name', name)}", style.G))
+            else:
+                print(col(f"  ✗ {name}: no setup() function", style.R))
+        except Exception as e:
+            print(col(f"  ✗ {name}: {e}", style.R))
     
-    def get_local_ip(self):
+    def get_commands(self):
+        cmds = {}
+        for name, p in self.plugins.items():
+            if p['enabled'] and 'commands' in p['module']:
+                cmds.update(p['module']['commands']())
+        return cmds
+    
+    def execute(self, cmd, args, ctx):
+        if not self.is_admin:
+            return None
+        cmds = self.get_commands()
+        if cmd in cmds:
+            try:
+                return cmds[cmd](args, ctx)
+            except Exception as e:
+                return col(f"plugin error: {e}", style.R)
+        return None
+
+# ------------- main class -------------
+class EchoMesh:
+    def __init__(self, nick):
+        self.nick = nick
+        self.sock = None
+        self.cipher = None
+        self.peer = None
+        self.running = True
+        self.is_admin = False
+        self.room_pass = None
+        self.history = []
+        self.connected = False
+        self.plugin_manager = None
+
+    def banner(self):
+        os.system('clear')
+        print(col(BANNER, style.C))
+        print(col("       p2p encrypted | no bullshit | host only admin", style.D))
+        print()
+
+    def local_ip(self):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
@@ -60,419 +134,425 @@ class EchoMeshPro:
             return ip
         except:
             return '127.0.0.1'
-    
-    def send_json(self, sock, data):
+
+    def send(self, sock, data):
         try:
-            json_str = json.dumps(data)
-            json_bytes = json_str.encode('utf-8')
-            length = len(json_bytes)
-            sock.send(length.to_bytes(4, 'big'))
-            sock.send(json_bytes)
+            j = json.dumps(data)
+            b = j.encode()
+            sock.send(len(b).to_bytes(4, 'big'))
+            sock.send(b)
             return True
         except:
             return False
-    
-    def recv_json(self, sock):
+
+    def recv(self, sock):
         try:
-            length_data = sock.recv(4)
-            if not length_data:
-                return None
-            length = int.from_bytes(length_data, 'big')
-            if length > 1024 * 1024:
-                return None
-            data = b''
-            while len(data) < length:
-                chunk = sock.recv(min(4096, length - len(data)))
-                if not chunk:
-                    return None
-                data += chunk
-            return json.loads(data.decode('utf-8'))
+            l = sock.recv(4)
+            if not l: return None
+            length = int.from_bytes(l, 'big')
+            if length > 1024*1024: return None
+            d = b''
+            while len(d) < length:
+                chunk = sock.recv(min(4096, length - len(d)))
+                if not chunk: return None
+                d += chunk
+            return json.loads(d.decode())
         except:
             return None
-    
-    def start_host(self, port=8888):
+
+    def host(self, port=8888):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        print(col("\n┌─ setup ─────────────────────────────", style.D))
         
-        try:
-            print(f"\n{self.color_text('🔧 ROOM SETUP', 'cyan')}")
-            print(f"{self.color_text('─' * 40, 'white')}")
-            
-            set_password = input(self.color_text("🔒 Set room password? (y/n): ", 'yellow')).lower()
-            if set_password == 'y':
-                self.room_password = hashlib.sha256(
-                    input(self.color_text("📝 Password: ", 'yellow')).encode()
-                ).hexdigest()
-                print(self.color_text("✅ Password protected!", 'green'))
-            
-            set_admin = input(self.color_text("👑 Set admin password? (y/n): ", 'yellow')).lower()
-            if set_admin == 'y':
-                self.admin_password = hashlib.sha256(
-                    input(self.color_text("🔐 Admin password: ", 'yellow')).encode()
-                ).hexdigest()
-                self.is_admin = True
-                print(self.color_text("✅ You are the HOST admin!", 'purple'))
-            
-            server.bind(('0.0.0.0', port))
-            server.listen(1)
-            my_ip = self.get_local_ip()
-            
-            print(f"\n{self.color_text('='*50, 'cyan')}")
-            print(f"{self.color_text('📡 Hosting on port:', 'yellow')} {port}")
-            print(f"{self.color_text('📍 Your IP:', 'yellow')} {self.color_text(my_ip, 'green')}")
-            print(f"{self.color_text('⏳ Waiting for connection...', 'yellow')}")
-            print(f"{self.color_text('='*50, 'cyan')}\n")
-            
-            self.connection, addr = server.accept()
-            self.peer_addr = addr[0]
-            self.is_host = True
-            
-            if self.peer_addr in self.banned_ips:
-                self.send_json(self.connection, {'type': 'error', 'msg': 'You are banned'})
-                self.connection.close()
+        # room password
+        pwd = input(col("│ room pass (skip): ", style.Y)).strip()
+        if pwd:
+            self.room_pass = hashlib.sha256(pwd.encode()).hexdigest()
+            print(col("│ room protected with password", style.G))
+        
+        # admin password - ONLY HOST CAN BE ADMIN
+        admin = input(col("│ admin pass (skip): ", style.Y)).strip()
+        if admin:
+            self.is_admin = True
+            print(col("│ YOU ARE THE HOST ADMIN", style.P))
+        
+        print(col("└────────────────────────────────────", style.D))
+
+        server.bind(('0.0.0.0', port))
+        server.listen(1)
+
+        ip = self.local_ip()
+        print(col(f"\n► hosting on {ip}:{port}", style.G))
+        print(col("► waiting for connection...", style.D))
+
+        self.sock, addr = server.accept()
+        self.peer = addr[0]
+        print(col(f"► connected to {self.peer}", style.G))
+
+        # password check
+        if self.room_pass:
+            self.send(self.sock, {'type': 'pass_req'})
+            resp = self.recv(self.sock)
+            if not resp or resp.get('pass') != self.room_pass:
+                self.send(self.sock, {'type': 'error'})
+                self.sock.close()
                 return False
+            self.send(self.sock, {'type': 'pass_ok'})
+
+        # key exchange
+        key = Fernet.generate_key()
+        self.send(self.sock, {'type': 'key', 'key': base64.b64encode(key).decode()})
+        resp = self.recv(self.sock)
+        
+        if resp and resp.get('type') == 'key_ack':
+            self.cipher = Fernet(key)
+            # SEND admin=False TO CLIENT - CLIENT NEVER GETS ADMIN
+            self.send(self.sock, {'type': 'ready', 'admin': False})
+            self.connected = True
+            print(col("► secure channel 🔒", style.G))
             
-            print(self.color_text(f"✅ Connected to {self.peer_addr}", 'green'))
+            # plugins only for host
+            self.plugin_manager = PluginManager(is_admin=self.is_admin)
+            if self.is_admin:
+                print(col("\n► loading plugins:", style.D))
+                self.plugin_manager.load_plugins()
             
-            if self.room_password:
-                self.send_json(self.connection, {'type': 'need_password'})
-                resp = self.recv_json(self.connection)
-                if not resp or resp.get('password') != self.room_password:
-                    self.send_json(self.connection, {'type': 'error', 'msg': 'Wrong password'})
-                    self.connection.close()
-                    return False
-                self.send_json(self.connection, {'type': 'password_ok'})
-            
-            my_key = Fernet.generate_key()
-            self.send_json(self.connection, {'type': 'key', 'key': base64.b64encode(my_key).decode()})
-            
-            resp = self.recv_json(self.connection)
-            if resp and resp.get('type') == 'key_ack':
-                self.cipher = Fernet(my_key)
-                self.send_json(self.connection, {'type': 'ready', 'admin': False})
-                print(self.color_text("🔐 Secure channel established!", 'green'))
-                return True
-            
-            return False
-        except Exception as e:
-            print(self.color_text(f"❌ Host error: {e}", 'red'))
-            return False
-    
-    def connect_to_peer(self, target_ip, port=8888):
+            return True
+        return False
+
+    def connect(self, target, port=8888):
         try:
-            self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.connection.connect((target_ip, port))
-            self.peer_addr = target_ip
-            self.is_host = False
-            
-            print(self.color_text(f"✅ Connected to {target_ip}:{port}", 'green'))
-            
-            data = self.recv_json(self.connection)
-            if data and data.get('type') == 'need_password':
-                print(self.color_text("🔒 Room is password protected", 'yellow'))
-                pwd = input(self.color_text("📝 Enter password: ", 'yellow'))
-                hashed = hashlib.sha256(pwd.encode()).hexdigest()
-                self.send_json(self.connection, {'type': 'password', 'password': hashed})
-                
-                resp = self.recv_json(self.connection)
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((target, port))
+            self.peer = target
+            print(col(f"► connected to {target}:{port}", style.G))
+
+            # client does NOT enter admin password
+            # only room password if needed
+            data = self.recv(self.sock)
+            if data and data.get('type') == 'pass_req':
+                pwd = input(col("room password: ", style.Y)).strip()
+                h = hashlib.sha256(pwd.encode()).hexdigest()
+                self.send(self.sock, {'type': 'pass', 'pass': h})
+                resp = self.recv(self.sock)
                 if resp and resp.get('type') == 'error':
-                    print(self.color_text("❌ Wrong password!", 'red'))
+                    print(col("► wrong password", style.R))
                     return False
-                data = self.recv_json(self.connection)
-            
+                data = self.recv(self.sock)
+
+            # key exchange
             if data and data.get('type') == 'key':
-                peer_key = base64.b64decode(data.get('key'))
-                self.cipher = Fernet(peer_key)
-                self.send_json(self.connection, {'type': 'key_ack'})
+                k = base64.b64decode(data.get('key'))
+                self.cipher = Fernet(k)
+                self.send(self.sock, {'type': 'key_ack'})
+                ready = self.recv(self.sock)
                 
-                ready = self.recv_json(self.connection)
                 if ready and ready.get('type') == 'ready':
+                    # client receives admin from host (always False)
                     self.is_admin = ready.get('admin', False)
-                    print(self.color_text("🔐 Secure channel established!", 'green'))
+                    self.connected = True
+                    print(col("► secure channel 🔒", style.G))
+                    
                     if self.is_admin:
-                        print(self.color_text("👑 You are a room admin!", 'purple'))
+                        print(col("► YOU ARE ADMIN (this should never happen)", style.R))
+                    else:
+                        print(col("► you are regular user (no admin rights)", style.D))
+                    
+                    # client does NOT get plugins
+                    self.plugin_manager = PluginManager(is_admin=False)
+                    
                     return True
-            
             return False
         except Exception as e:
-            print(self.color_text(f"❌ Connect error: {e}", 'red'))
+            print(col(f"► failed: {e}", style.R))
             return False
-    
-    def print_prompt(self):
-        sys.stdout.write(f"\r{self.color_text('┌─', 'dim')}{self.color_text(self.nickname, 'yellow')}{self.color_text(' ─────────────────────────────────', 'dim')}\n")
-        sys.stdout.write(f"{self.color_text('└> ', 'dim')}")
-        sys.stdout.flush()
-    
-    def display_message(self, sender, message, is_own=False, msg_type='text'):
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        
-        sys.stdout.write('\r' + ' ' * 80 + '\r')
-        
-        if msg_type == 'action':
-            if is_own:
-                sys.stdout.write(f"{self.color_text(f'[{timestamp}]', 'dim')} {self.color_text('→', 'purple')} * {self.color_text(message, 'purple')}\n")
-            else:
-                sys.stdout.write(f"{self.color_text(f'[{timestamp}]', 'purple')} * {self.color_text(sender, 'magenta')} {self.color_text(message, 'dim')}\n")
-        else:
-            if is_own:
-                sys.stdout.write(f"{self.color_text(f'[{timestamp}]', 'dim')} {self.color_text('→', 'green')} {self.color_text(message, 'green')}\n")
-            else:
-                sys.stdout.write(f"{self.color_text(f'[{timestamp}]', 'blue')} {self.color_text(sender, 'cyan')}: {self.color_text(message, 'white')}\n")
-        
-        sys.stdout.write(f"{self.color_text('┌─', 'dim')}{self.color_text(self.nickname, 'yellow')}{self.color_text(' ─────────────────────────────────', 'dim')}\n")
-        sys.stdout.write(f"{self.color_text('└> ', 'dim')}")
-        sys.stdout.flush()
-    
-    def receive_loop(self):
-        while self.running and self.connection:
+
+    def recv_loop(self):
+        while self.running and self.sock:
             try:
-                data = self.recv_json(self.connection)
+                data = self.recv(self.sock)
                 if not data:
                     break
-                
-                msg_type = data.get('type')
-                
-                if msg_type == 'message':
-                    encrypted = data.get('data', '')
-                    if self.cipher and encrypted:
+
+                t = data.get('type')
+
+                if t == 'msg':
+                    enc = data.get('data', '')
+                    if self.cipher and enc:
                         try:
-                            decrypted = self.cipher.decrypt(encrypted.encode()).decode()
-                            sender = data.get('sender', '?')
-                            
-                            self.stats['received'] += 1
-                            self.message_history.append((datetime.now(), sender, decrypted))
-                            if len(self.message_history) > 100:
-                                self.message_history.pop(0)
-                            
-                            self.display_message(sender, decrypted, is_own=False)
+                            dec = self.cipher.decrypt(enc.encode()).decode()
+                            sender = data.get('from', '?')
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            self.history.append((ts, sender, dec))
+                            if len(self.history) > 100:
+                                self.history.pop(0)
+
+                            sys.stdout.write('\r' + ' ' * 80 + '\r')
+                            if sender == self.nick:
+                                sys.stdout.write(f"{col(f'[{ts}]', style.D)} {col('→', style.G)} {col(dec, style.G)}\n")
+                            else:
+                                sys.stdout.write(f"{col(f'[{ts}]', style.B)} {col(sender, style.C)}: {col(dec, style.W)}\n")
+                            sys.stdout.write(f"{col('└> ', style.D)}")
+                            sys.stdout.flush()
                         except:
                             pass
-                
-                elif msg_type == 'action':
-                    encrypted = data.get('data', '')
-                    if self.cipher and encrypted:
+
+                elif t == 'action':
+                    enc = data.get('data', '')
+                    if self.cipher and enc:
                         try:
-                            action = self.cipher.decrypt(encrypted.encode()).decode()
-                            sender = data.get('sender', '?')
-                            self.display_message(sender, action, is_own=False, msg_type='action')
+                            act = self.cipher.decrypt(enc.encode()).decode()
+                            sender = data.get('from', '?')
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            sys.stdout.write('\r' + ' ' * 80 + '\r')
+                            if sender == self.nick:
+                                sys.stdout.write(f"{col(f'[{ts}]', style.D)} {col('→', style.P)} * {col(act, style.P)}\n")
+                            else:
+                                sys.stdout.write(f"{col(f'[{ts}]', style.P)} * {col(sender, style.P)} {col(act, style.D)}\n")
+                            sys.stdout.write(f"{col('└> ', style.D)}")
+                            sys.stdout.flush()
                         except:
                             pass
-                
-                elif msg_type == 'announcement':
+
+                elif t == 'announce':
                     msg = data.get('msg', '')
                     sys.stdout.write('\r' + ' ' * 80 + '\r')
-                    sys.stdout.write(f"{self.color_text('📢', 'yellow')} {self.color_text(msg, 'cyan')}\n")
-                    self.print_prompt()
-                
-                elif msg_type == 'system':
-                    msg = data.get('msg', '')
+                    sys.stdout.write(f"{col('📢', style.Y)} {col(msg, style.C)}\n")
+                    sys.stdout.write(f"{col('└> ', style.D)}")
+                    sys.stdout.flush()
+
+                elif t == 'kick':
                     sys.stdout.write('\r' + ' ' * 80 + '\r')
-                    sys.stdout.write(f"{self.color_text('🔔', 'red')} {msg}\n")
-                    self.print_prompt()
-                
-                elif msg_type == 'kick':
-                    sys.stdout.write('\r' + ' ' * 80 + '\r')
-                    print(f"{self.color_text('❌ You have been kicked by admin', 'red')}")
+                    print(col("► you got kicked by admin", style.R))
                     self.running = False
                     break
-                
-                elif msg_type == 'typing':
-                    if data.get('is_typing'):
-                        sys.stdout.write('\r' + ' ' * 80 + '\r')
-                        sys.stdout.write(f"{self.color_text('✏️ Peer is typing...', 'yellow')}\n")
-                        self.print_prompt()
-                
-                elif msg_type == 'ping':
-                    self.send_json(self.connection, {'type': 'pong'})
-                    
-            except Exception as e:
-                break
-        
-        print(f"\n{self.color_text('🔌 Disconnected', 'red')}")
-        self.running = False
-    
-    def send_message(self, text):
-        if not self.connection or not self.cipher:
-            return False
-        try:
-            encrypted = self.cipher.encrypt(text.encode()).decode()
-            success = self.send_json(self.connection, {'type': 'message', 'sender': self.nickname, 'data': encrypted})
-            if success:
-                self.stats['sent'] += 1
-                self.message_history.append((datetime.now(), self.nickname, text))
-                self.display_message(self.nickname, text, is_own=True)
-            return success
-        except:
-            return False
-    
-    def send_action(self, action):
-        if not self.connection or not self.cipher:
-            return False
-        try:
-            encrypted = self.cipher.encrypt(action.encode()).decode()
-            success = self.send_json(self.connection, {'type': 'action', 'sender': self.nickname, 'data': encrypted})
-            if success:
-                self.display_message(self.nickname, action, is_own=True, msg_type='action')
-            return success
-        except:
-            return False
-    
-    def send_typing(self, is_typing):
-        if not self.connection:
-            return
-        self.send_json(self.connection, {'type': 'typing', 'is_typing': is_typing})
-    
-    def chat_loop(self):
-        if not self.connection or not self.cipher:
-            print(self.color_text("❌ Not connected", 'red'))
-            return
-        
-        recv_thread = threading.Thread(target=self.receive_loop)
-        recv_thread.daemon = True
-        recv_thread.start()
-        
-        print(f"\n{self.color_text('='*50, 'cyan')}")
-        print(f"{self.color_text('💬 CHAT ACTIVE', 'bold')}")
-        print(f"{self.color_text('📡 Peer:', 'yellow')} {self.peer_addr}")
-        print(f"{self.color_text('👤 You:', 'yellow')} {self.color_text(self.nickname, 'green')}")
-        print(f"{self.color_text('👑 Admin:', 'yellow')} {self.color_text('Yes' if self.is_admin else 'No', 'purple' if self.is_admin else 'white')}")
-        print(f"{self.color_text('='*50, 'cyan')}")
-        print(f"{self.color_text('Commands:', 'yellow')} /help, /quit, /me, /status, /history")
-        if self.is_admin:
-            print(f"{self.color_text('Admin:', 'purple')} /kick, /announce <msg>")
-        print(f"{self.color_text('='*50, 'cyan')}\n")
-        
 
-        self.print_prompt()
+                elif t == 'ping':
+                    self.send(self.sock, {'type': 'pong'})
+
+            except:
+                break
+
+        self.connected = False
+        if self.running:
+            print(col("\n► connection lost", style.R))
+            self.running = False
+
+    def send_msg(self, text):
+        if not self.sock or not self.cipher:
+            return False
+        if not text.strip():
+            return False
+        try:
+            enc = self.cipher.encrypt(text.encode()).decode()
+            ok = self.send(self.sock, {'type': 'msg', 'from': self.nick, 'data': enc})
+            if ok:
+                ts = datetime.now().strftime('%H:%M:%S')
+                self.history.append((ts, self.nick, text))
+                sys.stdout.write('\r' + ' ' * 80 + '\r')
+                sys.stdout.write(f"{col(f'[{ts}]', style.D)} {col('→', style.G)} {col(text, style.G)}\n")
+                sys.stdout.write(f"{col('└> ', style.D)}")
+                sys.stdout.flush()
+            return ok
+        except:
+            return False
+
+    def send_action(self, text):
+        if not self.sock or not self.cipher:
+            return False
+        try:
+            enc = self.cipher.encrypt(text.encode()).decode()
+            return self.send(self.sock, {'type': 'action', 'from': self.nick, 'data': enc})
+        except:
+            return False
+
+    def chat(self):
+        if not self.connected:
+            print(col("► not connected", style.R))
+            return
+
+        threading.Thread(target=self.recv_loop, daemon=True).start()
+
+        print(col("\n┌────────────────────────────────────", style.D))
+        print(col(f"│ peer: {self.peer}", style.Y))
+        print(col(f"│ u: {self.nick}", style.G))
         
+        if self.is_admin:
+            print(col("│ ADMIN: YES 👑 (HOST ONLY)", style.P))
+        else:
+            print(col("│ ADMIN: NO (regular user)", style.D))
+        
+        if self.plugin_manager and self.plugin_manager.plugins:
+            print(col("│ plugins:", style.D))
+            for name, p in self.plugin_manager.plugins.items():
+                print(col(f"│   {p['info'].get('name', name)} v{p['info'].get('version', '?')}", style.D))
+        
+        print(col("│ type /help for commands", style.D))
+        print(col("└────────────────────────────────────", style.D))
+        sys.stdout.write(f"{col('└> ', style.D)}")
+        sys.stdout.flush()
+
         try:
             while self.running:
-                try:
-                    message = sys.stdin.readline().strip()
-                    
-                    if not message:
-                        continue
-                    
-                    if message.lower() == '/quit':
-                        print(self.color_text("👋 Disconnecting...", 'yellow'))
-                        break
-                    
-                    elif message.lower() == '/help':
-                        print(f"\n{self.color_text('📋 COMMANDS:', 'yellow')}")
-                        print(f"  {self.color_text('/quit', 'red')}     - Exit chat")
-                        print(f"  {self.color_text('/me', 'green')}      - Action: /me waves")
-                        print(f"  {self.color_text('/status', 'cyan')}   - Show connection info")
-                        print(f"  {self.color_text('/history', 'blue')}  - Last 15 messages")
-                        if self.is_admin:
-                            print(f"  {self.color_text('/kick', 'red')}     - Kick peer")
-                            print(f"  {self.color_text('/announce', 'purple')} - Send announcement")
-                        self.print_prompt()
-                        continue
-                    
-                    elif message.lower() == '/status':
-                        print(f"\n{self.color_text('📊 STATUS', 'cyan')}")
-                        print(f"  {self.color_text('Peer:', 'yellow')} {self.peer_addr}")
-                        print(f"  {self.color_text('Sent:', 'yellow')} {self.stats['sent']}")
-                        print(f"  {self.color_text('Received:', 'yellow')} {self.stats['received']}")
-                        print(f"  {self.color_text('Admin:', 'yellow')} {'Yes' if self.is_admin else 'No'}")
-                        self.print_prompt()
-                        continue
-                    
-                    elif message.lower() == '/history':
-                        print(f"\n{self.color_text('📜 LAST MESSAGES', 'cyan')}")
-                        if not self.message_history:
-                            print(f"  {self.color_text('No messages yet', 'white')}")
-                        for dt, s, m in self.message_history[-15:]:
-                            ts = dt.strftime('%H:%M:%S')
-                            if s == self.nickname:
-                                print(f"  {self.color_text(f'[{ts}]', 'dim')} {self.color_text('→', 'green')} {self.color_text(m, 'green')}")
-                            else:
-                                print(f"  {self.color_text(f'[{ts}]', 'blue')} {self.color_text(s, 'cyan')}: {self.color_text(m, 'white')}")
-                        self.print_prompt()
-                        continue
-                    
-                    elif message.startswith('/me '):
-                        action_text = message[4:]
-                        self.send_action(action_text)
-                        continue
-                    
-                    elif message.lower() == '/kick' and self.is_admin:
-                        self.send_json(self.connection, {'type': 'kick'})
-                        print(self.color_text("✅ Peer kicked", 'green'))
-                        self.print_prompt()
-                        continue
-                    
-                    elif message.startswith('/announce ') and self.is_admin:
-                        announcement = message[10:]
-                        self.send_json(self.connection, {'type': 'announcement', 'msg': announcement})
-                        print(self.color_text(f"📢 Announcement sent", 'green'))
-                        self.print_prompt()
-                        continue
-                    
-                    else:
-                        self.send_message(message)
-                    
+                msg = sys.stdin.readline().strip()
+                if msg is None:
+                    continue
 
-                    self.send_typing(True)
-                    time.sleep(0.5)
-                    self.send_typing(False)
-                    
-                except EOFError:
+                if msg == '/quit':
                     break
+
+                elif msg == '':
+                    continue
+
+                elif msg == '/help':
+                    print(col("\n  commands:", style.Y))
+                    print(col("  /quit       exit chat", style.D))
+                    print(col("  /me <txt>   action message", style.D))
+                    print(col("  /status     connection info", style.D))
+                    print(col("  /history    last 15 messages", style.D))
                     
+                    if self.is_admin:
+                        print(col("  /plugins    list plugins", style.D))
+                        print(col("  /kick       kick peer", style.P))
+                        print(col("  /announce   broadcast message", style.P))
+                    
+                    if self.plugin_manager and self.is_admin:
+                        plugin_cmds = self.plugin_manager.get_commands()
+                        if plugin_cmds:
+                            print(col("\n  plugin commands:", style.Y))
+                            for cmd in plugin_cmds.keys():
+                                print(col(f"  {cmd}", style.D))
+                    
+                    sys.stdout.write(f"{col('└> ', style.D)}")
+                    sys.stdout.flush()
+                    continue
+
+                elif msg == '/status':
+                    print(col(f"\n  peer: {self.peer}", style.C))
+                    print(col(f"  encryption: active 🔒", style.G))
+                    print(col(f"  admin: {'YES 👑' if self.is_admin else 'NO'}", style.P if self.is_admin else style.D))
+                    if self.plugin_manager:
+                        print(col(f"  plugins: {len(self.plugin_manager.plugins)}", style.D))
+                    sys.stdout.write(f"{col('└> ', style.D)}")
+                    sys.stdout.flush()
+                    continue
+
+                elif msg == '/history':
+                    print(col("\n  history:", style.C))
+                    if not self.history:
+                        print(col("  empty", style.D))
+                    for ts, who, what in self.history[-15:]:
+                        if who == self.nick:
+                            print(f"  {col(ts, style.D)} {col('→', style.G)} {what}")
+                        else:
+                            print(f"  {col(ts, style.B)} {who}: {what}")
+                    sys.stdout.write(f"{col('└> ', style.D)}")
+                    sys.stdout.flush()
+                    continue
+
+                elif msg == '/plugins' and self.is_admin:
+                    print(col("\n  plugins:", style.Y))
+                    if not self.plugin_manager or not self.plugin_manager.plugins:
+                        print(col("  no plugins loaded", style.D))
+                        print(col("  put .emf files in ./plugins/", style.D))
+                    for name, p in self.plugin_manager.plugins.items():
+                        info = p['info']
+                        print(col(f"  {info.get('name', name)} v{info.get('version', '?')}", style.G))
+                        print(col(f"    {info.get('description', 'no desc')}", style.D))
+                    sys.stdout.write(f"{col('└> ', style.D)}")
+                    sys.stdout.flush()
+                    continue
+
+                elif msg.startswith('/me '):
+                    self.send_action(msg[4:])
+                    continue
+
+                elif msg == '/kick' and self.is_admin:
+                    self.send(self.sock, {'type': 'kick'})
+                    print(col("► peer kicked", style.G))
+                    continue
+
+                elif msg.startswith('/announce ') and self.is_admin:
+                    announcement = msg[10:]
+                    self.send(self.sock, {'type': 'announce', 'msg': announcement})
+                    print(col(f"► announcement sent", style.G))
+                    continue
+
+                else:
+                    # plugin commands (only host/admin)
+                    if self.plugin_manager and self.is_admin:
+                        parts = msg.split(' ')
+                        cmd = parts[0]
+                        args = ' '.join(parts[1:]) if len(parts) > 1 else ''
+                        
+                        ctx = {
+                            'nick': self.nick,
+                            'peer': self.peer,
+                            'is_admin': self.is_admin,
+                            'send_msg': self.send_msg,
+                            'send_action': self.send_action,
+                            'history': self.history,
+                            'col': col,
+                            'style': style
+                        }
+                        
+                        result = self.plugin_manager.execute(cmd, args, ctx)
+                        if result is not None:
+                            if result:
+                                print(result)
+                            sys.stdout.write(f"{col('└> ', style.D)}")
+                            sys.stdout.flush()
+                            continue
+                    
+                    # normal message
+                    self.send_msg(msg)
+
         except KeyboardInterrupt:
-            print(f"\n{self.color_text('👋 Interrupted', 'yellow')}")
-        finally:
-            self.send_typing(False)
-            self.running = False
-            if self.connection:
-                self.connection.close()
-            print(self.color_text("✅ Disconnected", 'green'))
+            pass
+
+        self.running = False
+        if self.sock:
+            self.sock.close()
+        print(col("\n► disconnected", style.R))
 
 def main():
-    while True:
-        os.system('clear' if sys.platform != 'win32' else 'cls')
-        
-        chat = EchoMeshPro("")
-        chat.print_banner()
-        
-        nickname = input(f"{chat.color_text('👤 Your nickname:', 'cyan')} ").strip()
-        if not nickname:
-            nickname = f"User_{secrets.token_hex(2)}"
-        chat.nickname = nickname
-        
-        print(f"\n{chat.color_text('📡 Select mode:', 'yellow')}")
-        print(f"  {chat.color_text('1. 🏠 HOST', 'green')} - Create a room (you become admin)")
-        print(f"  {chat.color_text('2. 🔌 CONNECT', 'blue')} - Join a room (regular user)")
-        print(f"  {chat.color_text('3. ❌ EXIT', 'red')} - Exit")
-        
-        choice = input(f"\n{chat.color_text('👉 Choose (1/2/3):', 'yellow')} ").strip()
-        
-        if choice == '1':
-            port_input = input(f"{chat.color_text('🔌 Port (default 8888):', 'cyan')} ").strip()
-            port = int(port_input) if port_input else 8888
-            
-            if chat.start_host(port):
-                chat.chat_loop()
-            else:
-                input(f"\n{chat.color_text('Press Enter to continue...', 'white')}")
-                
-        elif choice == '2':
-            target_ip = input(f"{chat.color_text('🎯 Target IP:', 'cyan')} ").strip()
-            port_input = input(f"{chat.color_text('🔌 Port (default 8888):', 'cyan')} ").strip()
-            port = int(port_input) if port_input else 8888
-            
-            if chat.connect_to_peer(target_ip, port):
-                chat.chat_loop()
-            else:
-                input(f"\n{chat.color_text('Press Enter to continue...', 'white')}")
-                
-        elif choice == '3':
-            print(chat.color_text("👋 Goodbye!", 'cyan'))
-            break
+    chat = EchoMesh("")
+    chat.banner()
+
+    nick = input(col("nickname: ", style.C)).strip()
+    if not nick:
+        nick = f"user_{secrets.token_hex(2)}"
+    chat.nick = nick
+
+    print()
+    print(col("  1. host (create room - you become admin)", style.G))
+    print(col("  2. connect (join room - regular user)", style.B))
+    print(col("  3. exit", style.R))
+    print()
+
+    choice = input(col("> ", style.Y)).strip()
+
+    if choice == '1':
+        port = input(col("port (8888): ", style.D)).strip()
+        port = int(port) if port else 8888
+        if chat.host(port):
+            chat.chat()
         else:
-            print(chat.color_text("❌ Invalid choice", 'red'))
-            time.sleep(1)
+            print(col("► failed", style.R))
+
+    elif choice == '2':
+        ip = input(col("target ip: ", style.D)).strip()
+        port = input(col("port (8888): ", style.D)).strip()
+        port = int(port) if port else 8888
+        if chat.connect(ip, port):
+            chat.chat()
+        else:
+            print(col("► failed", style.R))
+
+    elif choice == '3':
+        print(col("► bye", style.D))
 
 if __name__ == "__main__":
     main()
