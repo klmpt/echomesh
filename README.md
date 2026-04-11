@@ -26,8 +26,8 @@ p2p encrypted messenger. no servers. only host gets plugin power.
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Cryptography](https://img.shields.io/badge/crypto-Fernet-purple.svg)
-![Stars](https://img.shields.io/github/stars/klmpat/echomesh?style=social)
-![Forks](https://img.shields.io/github/forks/klmpat/echomesh?style=social)
+![Stars](https://img.shields.io/github/stars/klmpt/echomesh?style=social)
+![Forks](https://img.shields.io/github/forks/klmpt/echomesh?style=social)
 
 ```
 
