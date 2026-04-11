@@ -16,18 +16,19 @@ p2p encrypted messenger. no servers. only host gets plugin power.
 
 ## looks like this
 
-![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Cryptography](https://img.shields.io/badge/crypto-Fernet-purple.svg)
-![Stars](https://img.shields.io/github/stars/yourname/echomesh?style=social)
-![Forks](https://img.shields.io/github/forks/yourname/echomesh?style=social)
-
 ```
 [22:15:30] bro: sup
 [22:15:32] → not much
 [22:15:35] * bro laughs
 ┌─u ─────────────────────────────────
 └> 
+
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Cryptography](https://img.shields.io/badge/crypto-Fernet-purple.svg)
+![Stars](https://img.shields.io/github/stars/yourname/echomesh?style=social)
+![Forks](https://img.shields.io/github/forks/yourname/echomesh?style=social)
+
 ```
 
 ## install
